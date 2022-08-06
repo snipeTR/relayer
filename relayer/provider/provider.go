@@ -6,11 +6,11 @@ import (
 	"time"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	transfertypes "github.com/cosmos/ibc-go/v3/modules/apps/transfer/types"
-	clienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
-	conntypes "github.com/cosmos/ibc-go/v3/modules/core/03-connection/types"
-	chantypes "github.com/cosmos/ibc-go/v3/modules/core/04-channel/types"
-	ibcexported "github.com/cosmos/ibc-go/v3/modules/core/exported"
+	transfertypes "github.com/cosmos/ibc-go/v4/modules/apps/transfer/types"
+	clienttypes "github.com/cosmos/ibc-go/v4/modules/core/02-client/types"
+	conntypes "github.com/cosmos/ibc-go/v4/modules/core/03-connection/types"
+	chantypes "github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
+	ibcexported "github.com/cosmos/ibc-go/v4/modules/core/exported"
 	"github.com/gogo/protobuf/proto"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -76,6 +76,19 @@ type PacketInfo struct {
 	TimeoutHeight    clienttypes.Height
 	TimeoutTimestamp uint64
 	Ack              []byte
+}
+
+func (pi PacketInfo) Packet() chantypes.Packet {
+	return chantypes.Packet{
+		Sequence:           pi.Sequence,
+		SourcePort:         pi.SourcePort,
+		SourceChannel:      pi.SourceChannel,
+		DestinationPort:    pi.DestPort,
+		DestinationChannel: pi.DestChannel,
+		Data:               pi.Data,
+		TimeoutHeight:      pi.TimeoutHeight,
+		TimeoutTimestamp:   pi.TimeoutTimestamp,
+	}
 }
 
 // ConnectionInfo contains relevant properties from connection handshake messages
@@ -178,16 +191,6 @@ type ChainProvider interface {
 	Init() error
 	CreateClient(clientState ibcexported.ClientState, dstHeader ibcexported.Header, signer string) (RelayerMessage, error)
 	SubmitMisbehavior( /*TODO TBD*/ ) (RelayerMessage, error)
-	ConnectionOpenInit(srcClientId, dstClientId string, dstHeader ibcexported.Header) ([]RelayerMessage, error)
-	ConnectionOpenTry(ctx context.Context, dstQueryProvider QueryProvider, dstHeader ibcexported.Header, srcClientId, dstClientId, srcConnId, dstConnId string) ([]RelayerMessage, error)
-	ConnectionOpenAck(ctx context.Context, dstQueryProvider QueryProvider, dstHeader ibcexported.Header, srcClientId, srcConnId, dstClientId, dstConnId string) ([]RelayerMessage, error)
-	ConnectionOpenConfirm(ctx context.Context, dstQueryProvider QueryProvider, dstHeader ibcexported.Header, dstConnId, srcClientId, srcConnId string) ([]RelayerMessage, error)
-	ChannelOpenInit(srcClientId, srcConnId, srcPortId, srcVersion, dstPortId string, order chantypes.Order, dstHeader ibcexported.Header) ([]RelayerMessage, error)
-	ChannelOpenTry(ctx context.Context, dstQueryProvider QueryProvider, dstHeader ibcexported.Header, srcPortId, dstPortId, srcChanId, dstChanId, srcVersion, srcConnectionId, srcClientId string) ([]RelayerMessage, error)
-	ChannelOpenAck(ctx context.Context, dstQueryProvider QueryProvider, dstHeader ibcexported.Header, srcClientId, srcPortId, srcChanId, dstChanId, dstPortId string) ([]RelayerMessage, error)
-	ChannelOpenConfirm(ctx context.Context, dstQueryProvider QueryProvider, dstHeader ibcexported.Header, srcClientId, srcPortId, srcChanId, dstPortId, dstChannId string) ([]RelayerMessage, error)
-	ChannelCloseInit(srcPortId, srcChanId string) (RelayerMessage, error)
-	ChannelCloseConfirm(ctx context.Context, dstQueryProvider QueryProvider, dsth int64, dstChanId, dstPortId, srcPortId, srcChanId string) (RelayerMessage, error)
 
 	// ValidatePacket makes sure packet is valid to be relayed.
 	// It should return TimeoutHeightError, TimeoutTimestampError, or TimeoutOnCloseError
@@ -211,6 +214,9 @@ type ChainProvider interface {
 	// for a given counterparty channel. This is used in ORDERED channels to ensure packets are being delivered in the
 	// exact same order as they were sent over the wire.
 	NextSeqRecv(ctx context.Context, msgTransfer PacketInfo, height uint64) (PacketProof, error)
+
+	// MsgTransfer constructs a MsgTransfer message ready to write to the chain.
+	MsgTransfer(dstAddr string, amount sdk.Coin, info PacketInfo) (RelayerMessage, error)
 
 	// MsgRecvPacket takes the packet information from a MsgTransfer along with the packet commitment,
 	// and assembles a full MsgRecvPacket ready to write to the chain.
@@ -311,7 +317,6 @@ type ChainProvider interface {
 
 	// TODO remove these message assembly functions in favor of the above.
 	MsgRelayAcknowledgement(ctx context.Context, dst ChainProvider, dstChanId, dstPortId, srcChanId, srcPortId string, dsth int64, packet RelayPacket) (RelayerMessage, error)
-	MsgTransfer(amount sdk.Coin, dstChainId, dstAddr, srcPortId, srcChanId string, timeoutHeight, timeoutTimestamp uint64) (RelayerMessage, error)
 	MsgRelayTimeout(ctx context.Context, dst ChainProvider, dsth int64, packet RelayPacket, dstChanId, dstPortId, srcChanId, srcPortId string, order chantypes.Order) (RelayerMessage, error)
 	MsgRelayRecvPacket(ctx context.Context, dst ChainProvider, dsth int64, packet RelayPacket, dstChanId, dstPortId, srcChanId, srcPortId string) (RelayerMessage, error)
 	MsgUpgradeClient(srcClientId string, consRes *clienttypes.QueryConsensusStateResponse, clientRes *clienttypes.QueryClientStateResponse) (RelayerMessage, error)
@@ -364,7 +369,6 @@ type QueryProvider interface {
 	QueryUpgradedConsState(ctx context.Context, height int64) (*clienttypes.QueryConsensusStateResponse, error)
 	QueryConsensusState(ctx context.Context, height int64) (ibcexported.ConsensusState, int64, error)
 	QueryClients(ctx context.Context) (clienttypes.IdentifiedClientStates, error)
-	AutoUpdateClient(ctx context.Context, dst ChainProvider, thresholdTime time.Duration, srcClientId, dstClientId string) (time.Duration, error)
 
 	// ics 03 - connection
 	QueryConnection(ctx context.Context, height int64, connectionid string) (*conntypes.QueryConnectionResponse, error)
@@ -396,7 +400,6 @@ type QueryProvider interface {
 
 type RelayPacket interface {
 	Msg(src ChainProvider, srcPortId, srcChanId, dstPortId, dstChanId string) (RelayerMessage, error)
-	FetchCommitResponse(ctx context.Context, dst ChainProvider, queryHeight uint64, dstChanId, dstPortId string) error
 	Data() []byte
 	Seq() uint64
 	Timeout() clienttypes.Height
